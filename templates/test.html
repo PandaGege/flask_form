@@ -1,0 +1,54 @@
+<html>
+    <head>
+        <title>测试
+        </title>
+    </head>
+    <body>
+        <form method='{{ form.method }}' action='{{ form.action }}'>
+            {% for name, parm in form.parms.items() %}
+                {% if parm.taginfo.field_type == "input" %}
+                <input type="{{ parm.taginfo.input_type }}" name="{{ parm.name }}" value="{{ parm.value }}"
+                    {% for k, v in parm.taginfo.extra.items() %}
+                    {{ k }}="{{ v }}"
+                    {% endfor %}
+                />
+                {% endif %}
+                <br />
+                {% if parm.taginfo.field_type == "textarea" %}
+                <textarea name="{{ parm.name }}" 
+                    {% for k, v in parm.taginfo.extra.items() %}
+                    {{ k }}="{{ v }}"
+                    {% endfor %}
+                    >{{ parm.value }}</textarea>
+                {% endif %}
+                <br />
+                {% if parm.taginfo.field_type == "checkbox" %}
+                    {% for item in parm.taginfo["items"] %}
+                        {{ item.show}}:
+                        <input type="checkbox" value="{{ item.value }}"
+                        name="{{ parm.name }}" {% if parm.taginfo.is_checked(item, parm.value) %}checked{% endif %} />
+                    {% endfor %}
+                {% endif %}
+                <br />
+                {% if parm.taginfo.field_type == "radio" %}
+                    {% for entry in parm.taginfo.entries %}
+                        {{ entry.show }}:
+                        <input type="radio" value="{{ entry.value }}" name="{{
+                        parm.name }}" {% if parm.taginfo.is_checked(entry, parm.value) %}checked{% endif %}>
+                    {% endfor %}
+                {% endif %}
+                <br />
+                {% if parm.taginfo.field_type == "option" %}
+                    <select name="{{ parm.name }}">
+                        {% for entry in parm.taginfo.entries %}
+                        <option value="{{ entry.value }}" {% if
+                        parm.taginfo.is_checked(entry, parm.value) %}
+                        selected="selected" {% endif %} >{{ entry.show }}</option>
+                        {% endfor %}
+                    </select>
+                {% endif %}
+            {% endfor %}
+            <input type="submit" />
+        </form>
+    </body>
+</html>
