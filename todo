@@ -1,4 +1,28 @@
 
 1, # when request.method = form.method 才有默认值
+  not done 但首次打开页时参数必然都为空，如果参数属性为Nullable=False会报错。
+
 2, line 315
-3, 测试
+
+
+3, 不需要form表单，只解析参数, 用于接口.
+   done
+
+4, nullable=True, 且没有默认值时，默认为None，还是0，'' ?
+  done: 默认为None
+
+5,  ChoiceType不命中时返回none，后于nullable判断
+   done
+
+6  checkbox 值可能是list
+   done
+
+7 test python3
+
+8 想办法在获取query和html抛出异常, 因为装饰器处理过程中的异常没法捕获
+    done
+
+9 计算值过程优化
+    done   cast by value_type >  default > nullable > callback 
+
+10 InputType 其它类型补充

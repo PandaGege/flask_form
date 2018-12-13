@@ -15,23 +15,20 @@
 flask和jinja完全基于unicode，所以输入输出文本默认皆为unicode
 '''
 
+import sys
 import six
+import types
 from collections import namedtuple, OrderedDict
 from flask import request
 
 
-# __all__ = [
-#         'IntType', 'FloatType', 'BoolType', 'BytesType', 'UnicodeType',
-#         'ChoiceType', 'IntRangeType',
-#         'InputType', 'PasswordType', 'TextareaType', 'CheckboxType',
-#         'RadioType'
-#     ]
-'''
-    issues:
-        1, ChoiceType不命中时返回none，后于nullable判断
-        2, checkbox 值可能是list
-
-'''
+__all__ = [
+        'IntType', 'FloatType', 'BoolType', 'BytesType', 'UnicodeType',
+        'ChoiceType', 'IntRangeType',
+        'InputType', 'TextareaType', 'CheckboxType',
+        'RadioType', 'OptionType', 'TagItems',
+        'form', 'option',
+    ]
 
 
 def to_unicode(text, encoding=None, errors='strict'):
@@ -302,7 +299,7 @@ class CheckBoxType(FormType):
             extra 为dict类型, css样式等
     '''
     name = 'checkbox'
-    multi_val = True
+    multiple = True
 
     def __init__(self, items, **kwargs):
         super(CheckBoxType, self).__init__(**kwargs)
@@ -329,7 +326,7 @@ class RadioType(CheckBoxType):
     '''单选按钮, 
     '''
     name = 'radio'
-    multi_val = False
+    multiple = False
 
     def __init__(self, items, **kwargs):
         super(RadioType, self).__init__(items, **kwargs)
@@ -345,7 +342,7 @@ class OptionType(CheckBoxType):
     '''下拉列表
     '''
     name = 'option'
-    multi_val = False
+    multiple = False
 
     def __init__(self, items, **kwargs):
         super(OptionType, self).__init__(items, **kwargs)
@@ -357,12 +354,13 @@ class OptionType(CheckBoxType):
         return vals
 
 
-tmp = namedtuple('_', ('input', 'textarea', 'checkbox', 'radio')
+tmp = namedtuple('_', ('input', 'textarea', 'checkbox', 'radio', 'option')
                  )
 FormTypes = tmp(input=InputType,
                 textarea=TextAreaType,
                 checkbox=CheckBoxType,
                 radio=RadioType,
+                option=OptionType,
                 )
 del tmp
 
@@ -378,11 +376,11 @@ class Option(object):
     callback: 执行回调做一些预处理, 如合法性检测
     extra: 其它想传递给html模板的键值对, 比如需特别指明的styles样式
     callback 先于其他逻辑, 参数request参数值
-    multi_val: 多个值时，返回list, item的类型为value_type指定的，默认为False.
+    multiple: 多个值时，返回list, item的类型为value_type指定的，默认为False.
         当form_type是CheckBox是默认为True，且只能为True
     '''
-    def __init__(self, name, form_type, value_type=UnicodeType, default=None,
-                 nullable=True, callback=None, multi_val=False, **extra):
+    def __init__(self, name, form_type=None, value_type=UnicodeType, default=None,
+                 nullable=True, callback=None, multiple=False, **extra):
         self.name = name
         self.form_type = self.convert_form_type(form_type)
         self.value_type = self.convert_value_type(value_type)
@@ -390,9 +388,9 @@ class Option(object):
         self.nullable = nullable
         self.callback = callback
         self.extra = extra
-        self.multi_val = multi_val
+        self.multiple = multiple
         if isinstance(self.form_type, CheckBoxType):
-            self.multi_val = self.form_type.multi_val
+            self.multiple = self.form_type.multiple
 
     def convert_form_type(self, ty):
         if isinstance(ty, FormType):
@@ -404,6 +402,9 @@ class Option(object):
                 return ty
         if isinstance(ty, type) and issubclass(ty, FormType):
             return ty()
+        # form_type可为空，因为有时候不需要form表单，比如用于接口时
+        if not ty:
+            return None
         raise TypeError('Unknown value type')
 
     def convert_value_type(self, ty):
@@ -429,12 +430,18 @@ class Option(object):
                 return BytesType()
         raise TypeError('Unknown value type')
 
-    def request_value(self, income_val=None):
-        if self.callback:
-            income_val = self.callback(income_val)
+    def cast_value(self, income_value):
+        # callback 在哪一步执行比较好？这是个问题？暂时放在最后
+        # callback参数为参数值，返回值为最终传递给用户代码的值
+        # callback可用于参数预处理，和raise error
+        # cast by value_type >  default > nullable > callback 
+        # 1, 先用参数类型转换值
+        # 2, 如果为空则用default值代替
+        # 3, 校验是否为空
+        # 4, callback返回装饰过的值、或者raise error
         vals = []
-        if income_val:
-            for iv in income_val:
+        if income_value:
+            for iv in income_value:
                 if iv:
                     val = self.value_type(iv, self.name)
                     vals.append(val)
@@ -445,11 +452,15 @@ class Option(object):
                 vals.append(self.default)
         if not vals and self.nullable is False:
             raise ValueError('{} can not be null'.format(self.name))
-        if not vals:
-            return u''
-        if self.multi_val:
-            return vals
-        return vals[0]
+        if self.multiple:
+            value = vals
+        elif vals:
+            value = vals[0]
+        else:
+            value = None
+        if self.callback is not None:
+            return self.callback(value)
+        return value
 
     def gen_html(self, val=None):
         html = {}
@@ -460,24 +471,78 @@ class Option(object):
         return html
 
 
+class ReqInfo(object):
+    def __init__(self):
+        self._query = OrderedDict()
+        self._exception = None
+        self._traceback = None
+        self._html = OrderedDict()
+
+    @property
+    def method(self):
+        return self._method
+
+    @method.setter
+    def method(self, value):
+        if value.lower() not in ('get', 'post'):
+            raise ValueError('Unsupported methods: {}'.format(value))
+        self._method = value
+
+    @property
+    def action(self):
+        return self._action
+
+    @action.setter
+    def action(self, value):
+        self._action= value
+
+    def set_query(self, name, val):
+        self._query[name] = val
+
+    def set_html(self, name, val):
+        self._html[name] = val
+
+    def if_raise(self):
+        if self._exception:
+            if isinstance(self._exception, types.InstanceType):
+                # The exception is an instance of an old-style class, which
+                # means type(self._exception) returns types.ClassType instead
+                # of the exception's actual class type.
+                exception_type = self._exception.__class__
+            else:
+                exception_type = type(self._exception)
+            raise exception_type, self._exception, self._traceback
+
+    @property
+    def query(self):
+        self.if_raise()
+        return self._query
+
+    @property
+    def html(self):
+        self.if_raise()
+        return {'method': self._method,
+                'action': self._action,
+                'parms': self._html}
+
+    def set_exception(self, e, tb):
+        self._exception = e
+        self._traceback = tb
+
+
 class Form(object):
     '''
         f:装饰器修饰的方法
-        var_query: 传递给f的参数名，值是处理后的query参数
-        var_html: 传递给f的参数名, 值是生成的form表单信息列表
-        need_html: 是否需要var_html参数
-        method: 即form的method; 当request.method与method相同的时候，才解析参数
+        method: 即form的method
         action: 即form的action
+        need_html: 是否需要var_html参数
     '''
-    def __init__(self, f, var_query='query', var_html='html', method='post',
-                 action=None, need_html=False):
+    def __init__(self, f, method='post', action='#', need_html=False):
         self.__name__ = f.__name__
         self.__doc__ = f.__doc__
         self.f = f
         # 按字段配置顺序
         self.f.__forms__.reverse()
-        self.var_html = var_html
-        self.var_query = var_query
         self.need_html = need_html
         method = method.lower()
         if method not in ('post', 'get'):
@@ -486,46 +551,40 @@ class Form(object):
         self.action = action
 
     def _request_query(self):
-        '''不管是什么http method。只要取参数
-        '''
         if request.method == 'GET':
             params = request.args
         if request.method == 'POST':
             params = request.form
         return dict(params.lists())
 
-    def main(self):
-        query, html = {}, {}
-        html['method'] = self.method
-        html['action'] = self.action
-        html['parms'] = OrderedDict()
+    def main(self, info):
+        info.method = self.method
+        info.action = self.action
         opts = self.f.__forms__
-        need_value = False
-        if request.method.lower() == self.method:
-            need_value = True
-            self.params = self._request_query()
+        params = self._request_query()
         for opt in opts:
             name = opt.name
-            val = None
-            if need_value:
-                income_val = self.params.get(name)
-                val = opt.request_value(income_val)
-                print val
-            query[name] = val
+            income_val = params.get(name)
+            val = opt.cast_value(income_val)
+            info.set_query(name, val)
             if self.need_html:
                 h = opt.gen_html(val)
-                html['parms'][name] = h
-        return query, html
+                info.set_html(name, h)
+        return info
 
     def __call__(self, *args, **kwargs):
-        query, html = self.main()
-        kwargs[self.var_query] = query
-        if self.need_html:
-            kwargs[self.var_html] = html
+        info = ReqInfo()
+        try:
+            self.main(info)
+        except:
+            e, tb = sys.exc_info()[1:]
+            info.set_exception(e, tb)
+        # request实例在请求处理期间可用，so可以把结果绑定到request上
+        request.flask_form = info
         return self.f(*args, **kwargs)
 
 
-def ready(*args, **kwargs):
+def form(*args, **kwargs):
     def decorator(f):
         return Form(f, *args, **kwargs)
     return decorator
